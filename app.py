@@ -13,6 +13,9 @@ import time
 import datetime
 import hashlib
 import tkinter as tk
+import inspect
+import textwrap
+import traceback
 
 # --- CONFIGURATION ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -25,10 +28,18 @@ CONFIG_FILE = os.path.join(INTERNAL_DATA_ROOT, 'config.json')
 os.makedirs(INTERNAL_DATA_ROOT, exist_ok=True)
 
 APP_LOGS = []
+EXT_IDS = {}
+MIRRORED = {}
+LOG_DIR = os.path.join(BASE_DIR, 'logs')
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_FILE = os.path.join(LOG_DIR, 'viewtube.log')
 def log(message):
     entry = f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {message}"
     print(entry)
     APP_LOGS.append(entry)
+    try:
+        with open(LOG_FILE, 'a', encoding='utf-8') as f: f.write(entry + "\n")
+    except: pass
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -124,7 +135,7 @@ def generate_manager_html():
             
             # We must use the ID generated from the MIRRORED C: path
             mirrored_root = os.path.join(INTERNAL_EXT_DIR, folder)
-            ext_id = get_extension_id(mirrored_root)
+            ext_id = EXT_IDS.get(folder) or get_extension_id(mirrored_root)
             
             name, opt_page = folder, ""
             try:
@@ -151,7 +162,7 @@ def get_injected_ui():
     cfg = load_config()
     return """
     (function() {
-        if(window.vt_loaded) return; window.vt_loaded = true;
+        if(window.vt_loaded || !document.body || !document.head) return; window.vt_loaded = true;
         let vtPolicy = null;
         if (window.trustedTypes && window.trustedTypes.createPolicy) {
             try { vtPolicy = window.trustedTypes.createPolicy('vt', { createHTML: (s) => s }); } catch (e) {}
@@ -183,10 +194,11 @@ def get_injected_ui():
 
 class Api:
     def __init__(self): self._w = None
-    def go_google(self): self._w.load_url("https://google.com")
-    def go_home(self): self._w.load_url("https://youtube.com")
-    def go_manager(self): self._w.load_html(generate_manager_html())
-    def open_ext_url(self, url): self._w.load_url(url)
+    def _nav(self, fn, *args): threading.Timer(0.15, fn, args).start()
+    def go_google(self): self._nav(self._w.load_url, "https://google.com")
+    def go_home(self): self._nav(self._w.load_url, "https://youtube.com")
+    def go_manager(self): self._nav(lambda: self._w.load_html(generate_manager_html()))
+    def open_ext_url(self, url): self._nav(self._w.gui.load_url, url, self._w.uid)   
     def save_pos(self, x, y): save_config(x, y)
     def show_logs(self):
         txt = "\\n".join(APP_LOGS).replace("'", "\\'").replace('"', '\\"').replace('\n', '\\n')
@@ -214,18 +226,109 @@ def init_app():
         for item in os.listdir(EXT_DIR):
             src = os.path.join(EXT_DIR, item); root = find_manifest(src)
             if root:
-                dest = os.path.join(INTERNAL_EXT_DIR, item); shutil.copytree(root, dest)
+                dest = os.path.join(INTERNAL_EXT_DIR, item); shutil.copytree(root, dest); MIRRORED[item] = dest
                 paths.append(f'"{get_short_path(dest)}"')
     if paths:
         log(f"Mirrored {len(paths)} extensions.")
         os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = f"--load-extension={','.join(paths)} --enable-browser-extensions --allow-file-access-from-files"
 
+def install_hooks():
+    try:
+        from webview.platforms import edgechromium as ec
+        from System import Action
+        from System.Threading.Tasks import Task
+        from Microsoft.Web.WebView2.Core import CoreWebView2Environment, CoreWebView2EnvironmentOptions, CoreWebView2BrowserExtension
+    except Exception as e:
+        log(f"Hooks unavailable: {e}")
+        return
+
+    ec.CoreWebView2Environment = CoreWebView2Environment
+    ec.CoreWebView2EnvironmentOptions = CoreWebView2EnvironmentOptions
+
+    try:
+        src = textwrap.dedent(inspect.getsource(ec.EdgeChrome.__init__))
+        old = "self.webview.EnsureCoreWebView2Async(None)"
+        if old not in src:
+            log("Env patch skipped: anchor not found")
+        else:
+            new = "\n    ".join([
+                "_opts = CoreWebView2EnvironmentOptions()",
+                "_opts.AreBrowserExtensionsEnabled = True",
+                "_opts.AdditionalBrowserArguments = props.AdditionalBrowserArguments",
+                "def _vt_ensure(task):",
+                "    self.webview.EnsureCoreWebView2Async(task.Result)",
+                "CoreWebView2Environment.CreateAsync(props.BrowserExecutableFolder, props.UserDataFolder, _opts).ContinueWith(Action[Task[CoreWebView2Environment]](_vt_ensure), self.syncContextTaskScheduler)",
+            ])
+            ns = {}
+            exec(compile(src.replace(old, new, 1), "<vt_env_patch>", "exec"), ec.__dict__, ns)
+            ec.EdgeChrome.__init__ = ns["__init__"]
+    except Exception as e:
+        log(f"Env patch failed: {e}")
+        return
+
+    original = ec.EdgeChrome.on_webview_ready
+
+    def on_ready(self, sender, args):
+        original(self, sender, args)
+        if not args.IsSuccess:
+            log(f"WebView2 init failed: {args.InitializationException}")
+            return
+        core = sender.CoreWebView2
+        log(f"WebView2 runtime {core.Environment.BrowserVersionString}")
+        try:
+            ui = get_injected_ui()
+            boot = "(function(){if(window.top!==window)return;var go=function(){" + ui + "};if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',go);}else{go();}})();"
+            core.AddScriptToExecuteOnDocumentCreatedAsync(boot)
+        except Exception as e:
+            log(f"Pill script registration failed: {e}")
+        core.ProcessFailed += lambda s, a: log(f"Process failed: {a.ProcessFailedKind} {a.Reason}")
+        core.NavigationCompleted += lambda s, a: None if a.IsSuccess else log(f"Navigation failed: {a.WebErrorStatus}")
+        pending = [len(MIRRORED)]
+
+        def make_cb(folder):
+            def cb(task):
+                try:
+                    EXT_IDS[folder] = task.Result.Id
+                    log(f"Extension loaded: {folder} -> {task.Result.Id} name={task.Result.Name} enabled={task.Result.IsEnabled}")
+                except Exception as e:
+                    log(f"Extension failed: {folder}: {e!r}")
+                pending[0] -= 1
+                if pending[0] == 0:
+                    def audit(t):
+                        try:
+                            for ext in t.Result:
+                                known = ext.Id in EXT_IDS.values()
+                                log(f"Installed extension: {ext.Id} name={ext.Name} known={known}")
+                                if not known:
+                                    ext.RemoveAsync()
+                        except Exception as e:
+                            log(f"Extension audit failed: {e!r}")
+                        core.Reload()
+                    core.Profile.GetBrowserExtensionsAsync().ContinueWith(Action[Task](audit), self.syncContextTaskScheduler)
+            return cb
+
+        for folder, path in MIRRORED.items():
+            try:
+                core.Profile.AddBrowserExtensionAsync(path).ContinueWith(
+                    Action[Task[CoreWebView2BrowserExtension]](make_cb(folder)),
+                    self.syncContextTaskScheduler,
+                )
+            except Exception as e:
+                log(f"Extension add error: {folder}: {e}")
+                pending[0] -= 1
+
+    ec.EdgeChrome.on_webview_ready = on_ready
+
 def main():
     init_app()
+    install_hooks()
+    sys.excepthook = lambda t, v, tb: log("".join(traceback.format_exception(t, v, tb)))
+    threading.excepthook = lambda a: log("".join(traceback.format_exception(a.exc_type, a.exc_value, a.exc_traceback)))
     threading.Thread(target=show_splash, daemon=True).start()
     api = Api(); window = webview.create_window('ViewTube', url='https://youtube.com', width=1280, height=720, js_api=api)
     api._w = window
     window.events.loaded += lambda: window.evaluate_js(get_injected_ui())
+    webview.settings['REMOTE_DEBUGGING_PORT'] = 9222
     webview.start(private_mode=False, storage_path=USER_DATA_DIR)
 
 if __name__ == '__main__':
