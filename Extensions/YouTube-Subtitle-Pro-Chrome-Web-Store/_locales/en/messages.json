@@ -1,0 +1,18 @@
+{
+  "appName": {
+    "message": "YouTube Subtitle Pro",
+    "description": "The name of the extension as it appears in the Chrome Web Store."
+  },
+  "appDesc": {
+    "message": "Customize YouTube subtitles with local fonts, SRT files, cleanup tools, and Arabic/English presets.",
+    "description": "Short description shown in the Chrome Web Store under the extension name (max 132 chars)."
+  },
+  "actionTitle": {
+    "message": "Subtitle Settings",
+    "description": "The tooltip text displayed when hovering over the extension icon in the browser toolbar."
+  },
+  "commandOpen": {
+    "message": "Open Settings Panel",
+    "description": "The description of the keyboard shortcut action found in the Chrome extensions shortcuts menu."
+  }
+}

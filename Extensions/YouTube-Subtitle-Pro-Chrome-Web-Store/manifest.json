@@ -1,0 +1,76 @@
+{
+"update_url": "https://clients2.google.com/service/update2/crx",
+
+  "manifest_version": 3,
+  "name": "__MSG_appName__",
+  "default_locale": "en",
+  "version": "3.1.1",
+  "description": "__MSG_appDesc__",
+  "homepage_url": "https://extractly.vip/",
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "commands": {
+    "toggle-panel": {
+      "suggested_key": {
+        "default": "Alt+S"
+      },
+      "description": "Toggle Settings Panel"
+    },
+    "font-size-up": {
+      "suggested_key": {
+        "default": "Alt+Up"
+      },
+      "description": "Increase Font Size"
+    },
+    "font-size-down": {
+      "suggested_key": {
+        "default": "Alt+Down"
+      },
+      "description": "Decrease Font Size"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png",
+    "512": "icons/icon512.png"
+  },
+  "action": {
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "24": "icons/icon48.png",
+      "32": "icons/icon48.png"
+    },
+    "default_title": "__MSG_actionTitle__"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://www.youtube-nocookie.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "fonts/ibm-plex-sans-arabic/*.woff2",
+        "icons/*.png",
+        "icons/icon48.png"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}
